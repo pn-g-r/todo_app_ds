@@ -58,7 +58,7 @@ Railway reads this to know which Python version to install. `x` means "latest pa
 Create this file in the project root (no file extension):
 
 ```
-web: python manage.py collectstatic --noinput && python manage.py migrate --noinput && gunicorn todoproject.wsgi --bind 0.0.0.0:${PORT} --log-file -
+web: python manage.py collectstatic --noinput && python manage.py migrate --noinput && gunicorn todoproject.wsgi:application --bind 0.0.0.0:${PORT} --log-file -
 ```
 
 **What this does:**
@@ -120,10 +120,12 @@ DEBUG = True
 **With:**
 
 ```python
-DEBUG = os.environ.get("DEBUG", "False") == "True"
+DEBUG = os.environ.get("DEBUG", "").lower().strip() in ("1", "true", "yes")
 ```
 
-**Why:** `DEBUG=True` in production is a major security risk. Django's debug error pages expose your full source code, database queries, settings (including secret keys), and Python tracebacks to anyone who triggers an error. Attackers can use this information to find vulnerabilities. Additionally, `DEBUG=True` causes Django to cache all SQL queries in memory, eventually consuming all available RAM and crashing the server. The `"False"` default ensures production is always safe even if someone forgets to set the variable.
+**Why:** `DEBUG=True` in production is a major security risk — Django's debug error pages expose your full source code, database queries, settings (including secret keys), and Python tracebacks to anyone who triggers an error. Attackers can use this information to find vulnerabilities. Additionally, `DEBUG=True` causes Django to cache all SQL queries in memory, eventually consuming all available RAM and crashing the server.
+
+The expression `in ("1", "true", "yes")` is case-insensitive and accepts multiple formats — `True`, `true`, `TRUE`, `True`, `1`, `yes`, `YES` all work. The `""` default means DEBUG is off unless explicitly enabled, so production is always safe even if someone forgets to set the variable.
 
 #### d) Change `ALLOWED_HOSTS` to use an environment variable
 
@@ -156,7 +158,31 @@ CSRF_TRUSTED_ORIGINS = [
 
 This code auto-generates the trusted origins from `ALLOWED_HOSTS` by prefixing `https://` to each domain. It filters out `localhost`/`127.0.0.1` because local development typically runs over HTTP, not HTTPS — generating `https://localhost` would break CSRF checks on your dev machine.
 
-#### f) Replace the `DATABASES` block
+#### f) Add production security headers
+
+Add this block **immediately after** `CSRF_TRUSTED_ORIGINS`:
+
+```python
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+```
+
+**Why each matters:**
+
+- **`SECURE_PROXY_SSL_HEADER`** — Railway terminates HTTPS at its edge proxy and forwards traffic to Gunicorn over HTTP. Without this setting, Django thinks every request is plain HTTP — `request.is_secure()` returns `False`, absolute URLs use `http://` instead of `https://`, and security middleware doesn't enforce HTTPS redirects. This setting tells Django: "trust the `X-Forwarded-Proto` header from Railway's proxy."
+
+- **`SECURE_SSL_REDIRECT=True`** — Automatically redirects all HTTP requests to HTTPS. If someone accidentally accesses your site via HTTP, Django sends a 301 redirect to the HTTPS version.
+
+- **`SESSION_COOKIE_SECURE=True`** — Marks session cookies with the `Secure` flag so browsers only send them over HTTPS. Without this, an attacker on the same public WiFi could steal session cookies and hijack user accounts.
+
+- **`CSRF_COOKIE_SECURE=True`** — Same as above, but for the CSRF protection cookie. Prevents CSRF token theft over unencrypted connections.
+
+The `if not DEBUG:` guard ensures none of these activate on your local dev machine (where you run over HTTP on `127.0.0.1:8000`), but all activate automatically in production on Railway.
+
+#### g) Replace the `DATABASES` block
 
 **Replace** the entire `DATABASES` block (lines 76-81):
 
@@ -199,7 +225,7 @@ import os
 import dj_database_url
 ```
 
-#### g) Add `STATIC_ROOT` and configure Whitenoise
+#### h) Add `STATIC_ROOT` and configure Whitenoise
 
 **Why this is needed:** Django's built-in `runserver` serves static files automatically during development. In production, Gunicorn does NOT serve static files — it only handles Python/WSGI requests. Without a static file server, Django admin CSS, JavaScript, and any custom static assets will return 404 errors, leaving the admin panel unstyled and unusable. Whitenoise fills this gap: it's a middleware that serves static files directly from the Django app without needing Nginx or a CDN. It's the simplest way to handle static files on Railway.
 
@@ -242,7 +268,7 @@ STORAGES = {
 
 **Why `CompressedManifestStaticFilesStorage`:** This storage backend compresses static files with gzip/Brotli and appends content-hashes to filenames (e.g., `styles.css` → `styles.a1b2c3d4.css`). The hashed names enable far-future cache headers, meaning browsers load your static files instantly on repeat visits. If you skip this and use the basic storage, Whitenoise still works but without compression or cache-busting.
 
-#### h) Add `MEDIA_URL` and `MEDIA_ROOT`
+#### i) Add `MEDIA_URL` and `MEDIA_ROOT`
 
 Add these two lines **after** `STATIC_URL`:
 
@@ -688,7 +714,7 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-key-change-me")
 
 CLOUDINARY_URL = os.environ.get("CLOUDINARY_URL", "")
 
-DEBUG = os.environ.get("DEBUG", "False") == "True"
+DEBUG = os.environ.get("DEBUG", "").lower().strip() in ("1", "true", "yes")
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
 
@@ -696,6 +722,12 @@ CSRF_TRUSTED_ORIGINS = [
     f"https://{host}" for host in ALLOWED_HOSTS
     if host not in ["127.0.0.1", "localhost"]
 ]
+
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -819,7 +851,7 @@ Before pushing to GitHub, make sure these files exist/are modified:
 - [ ] `requirements.txt` (new — includes `Pillow`, and optionally `cloudinary`/`django-cloudinary-storage`)
 - [ ] `runtime.txt` (new)
 - [ ] `Procfile` (new — single `web:` command: `collectstatic && migrate && gunicorn`)
-- [ ] `todoproject/settings.py` (modified — 8 changes: `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, `DATABASES`, `STATIC_ROOT`+Whitenoise, `MEDIA_URL`/`MEDIA_ROOT`, `CLOUDINARY_URL`+conditional blocks)
+- [ ] `todoproject/settings.py` (modified — 9 changes: `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, production security headers, `DATABASES`, `STATIC_ROOT`+Whitenoise, `MEDIA_URL`/`MEDIA_ROOT`, `CLOUDINARY_URL`+conditional blocks)
 - [ ] `todos/urls.py` (modified — remove `if settings.DEBUG:` guard if using Approach A)
 - [ ] `.env.example` (new)
 - [ ] `.gitignore` (updated — add `staticfiles/`, `media/`, and `.env`)
