@@ -1,0 +1,35 @@
+{% extends "todos/base.html" %}
+{% block title %}Profile - TodoApp{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h1>Profile Picture</h1>
+
+    <div style="display:flex;align-items:center;gap:1.5rem;margin-bottom:1.5rem">
+        {% if user.profile.avatar %}
+            <img src="{{ user.profile.avatar.url }}" alt="{{ user.username }}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:3px solid #764ba2">
+        {% else %}
+            <div style="width:80px;height:80px;border-radius:50%;background:linear-gradient(135deg, #667eea, #764ba2);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:2rem;text-transform:uppercase">{{ user.username|slice:":1" }}</div>
+        {% endif %}
+        <div>
+            <strong style="font-size:1.1rem">{{ user.username }}</strong>
+            <br><span class="text-muted">{{ user.email }}</span>
+        </div>
+    </div>
+
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        <div class="form-group">
+            <label for="{{ form.avatar.id_for_label }}">Choose a profile picture</label>
+            {{ form.avatar }}
+            {% if form.avatar.errors %}
+                {% for error in form.avatar.errors %}
+                    <div class="alert alert-error" style="margin-top:0.3rem;padding:0.4rem 0.8rem;font-size:0.8rem">{{ error }}</div>
+                {% endfor %}
+            {% endif %}
+        </div>
+        <button type="submit" class="btn btn-primary">Save Picture</button>
+        <a href="{% url 'todo_list' %}" class="btn btn-secondary" style="margin-left:0.5rem">Cancel</a>
+    </form>
+</div>
+{% endblock %}

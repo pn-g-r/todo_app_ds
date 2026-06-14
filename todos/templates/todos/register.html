@@ -1,0 +1,29 @@
+{% extends "todos/base.html" %}
+{% block title %}Register - TodoApp{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h1>Create Account</h1>
+    <form method="post">
+        {% csrf_token %}
+        {% for field in form %}
+        <div class="form-group">
+            <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {{ field }}
+            {% if field.errors %}
+                {% for error in field.errors %}
+                    <div class="alert alert-error" style="margin-top:0.3rem;padding:0.4rem 0.8rem;font-size:0.8rem">{{ error }}</div>
+                {% endfor %}
+            {% endif %}
+            {% if field.help_text %}
+                <small class="text-muted">{{ field.help_text }}</small>
+            {% endif %}
+        </div>
+        {% endfor %}
+        <button type="submit" class="btn btn-primary">Register</button>
+    </form>
+    <p class="text-center mt-2">
+        Already have an account? <a href="{% url 'login' %}" style="color:#764ba2">Login</a>
+    </p>
+</div>
+{% endblock %}

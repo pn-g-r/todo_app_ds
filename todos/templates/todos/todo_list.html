@@ -1,0 +1,45 @@
+{% extends "todos/base.html" %}
+{% block title %}My Todos{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem;padding-bottom:1.5rem;border-bottom:2px solid #f0edf6">
+        {% if user.profile.avatar %}
+            <img src="{{ user.profile.avatar.url }}" alt="{{ user.username }}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;border:3px solid #764ba2;flex-shrink:0">
+        {% else %}
+            <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg, #667eea, #764ba2);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.4rem;flex-shrink:0;text-transform:uppercase">{{ user.username|slice:":1" }}</div>
+        {% endif %}
+        <div>
+            <h1 style="margin-bottom:0">My Todos</h1>
+            <a href="{% url 'profile' %}" style="font-size:0.85rem;color:#764ba2;text-decoration:none">{% if user.profile.avatar %}Change picture{% else %}Add profile picture{% endif %}</a>
+        </div>
+    </div>
+
+    <div class="header-row">
+        <span></span>
+        <a href="{% url 'todo_create' %}" class="btn btn-primary btn-sm">+ New Todo</a>
+    </div>
+
+    {% if todos %}
+        {% for todo in todos %}
+        <div class="todo-item {% if todo.completed %}completed{% endif %}">
+            <div class="todo-content">
+                <div class="todo-title">{{ todo.title }}</div>
+                {% if todo.description %}
+                <div class="todo-desc">{{ todo.description }}</div>
+                {% endif %}
+            </div>
+            <div class="todo-actions">
+                <a href="{% url 'todo_update' todo.pk %}" class="btn btn-sm btn-secondary">Edit</a>
+                <a href="{% url 'todo_delete' todo.pk %}" class="btn btn-sm btn-danger">Delete</a>
+            </div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="empty-state">
+            <p>No todos yet!</p>
+            <a href="{% url 'todo_create' %}" class="btn btn-primary">Create your first todo</a>
+        </div>
+    {% endif %}
+</div>
+{% endblock %}
