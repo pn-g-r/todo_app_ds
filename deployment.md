@@ -27,7 +27,7 @@ django>=6.0,<6.1
 gunicorn
 whitenoise
 dj-database-url
-psycopg2-binary
+psycopg[binary]
 Pillow
 ```
 
@@ -36,7 +36,7 @@ Pillow
 - `gunicorn` — production WSGI server (Django's `runserver` is not for production)
 - `whitenoise` — serves static files directly from the Django app
 - `dj-database-url` — parses the `DATABASE_URL` environment variable Railway provides
-- `psycopg2-binary` — PostgreSQL database adapter for Python
+- `psycopg[binary]` — PostgreSQL database adapter for Python (version 3, native async support)
 - `Pillow` — image processing library (required by Django's `ImageField` for profile picture uploads)
 
 ---
@@ -58,12 +58,13 @@ Railway reads this to know which Python version to install. `x` means "latest pa
 Create this file in the project root (no file extension):
 
 ```
-web: python manage.py collectstatic --noinput && python manage.py migrate --noinput && gunicorn todoproject.wsgi --log-file -
+web: python manage.py collectstatic --noinput && python manage.py migrate --noinput && gunicorn todoproject.wsgi --bind 0.0.0.0:${PORT} --log-file -
 ```
 
 **What this does:**
 - `web` — Railway runs this as the container's start command. It collects static files into `STATIC_ROOT` (needed for Whitenoise and Django admin styling), applies pending database migrations, then starts the application using gunicorn.
-- `collectstatic` is placed here (not in `release:`) because Railway's release phase runs in a **separate container** — any filesystem changes from release are lost. Static files must be collected in the same container that runs the web process.
+- `--bind 0.0.0.0:${PORT}` is **critical** — without it, Gunicorn binds to `127.0.0.1:8000` (loopback only). Railway's reverse proxy can't reach loopback inside the container, health checks fail, and the deploy is marked as crashed. `${PORT}` is the environment variable Railway injects dynamically at runtime.
+- `collectstatic` is placed here (not in Railway's Pre-deploy Command) because Pre-deploy commands run in a **separate container** — any filesystem changes from Pre-deploy are lost. Static files must be collected in the same container that runs the web process.
 - `migrate` with `--noinput` is harmless even if run on every container restart.
 - If `collectstatic` fails, `migrate` and `gunicorn` are skipped — this lets you catch misconfigurations in the deploy logs.
 
@@ -140,7 +141,22 @@ ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "127.0.0.1,localhost").split(","
 
 **Why:** Django's `ALLOWED_HOSTS` is a security mechanism that prevents HTTP Host header attacks. An empty list `[]` means Django rejects all incoming requests (except from `localhost` in debug mode). In production, you must explicitly list every domain that's allowed to serve your app. If you forget to set this, every visitor will see a "Bad Request (400)" error. Using an environment variable lets you configure different domains for local dev (`localhost`) vs Railway (`yourapp.up.railway.app`) without changing code.
 
-#### e) Replace the `DATABASES` block
+#### e) Add `CSRF_TRUSTED_ORIGINS`
+
+Add this line **immediately after** `ALLOWED_HOSTS`:
+
+```python
+CSRF_TRUSTED_ORIGINS = [
+    f"https://{host}" for host in ALLOWED_HOSTS
+    if host not in ["127.0.0.1", "localhost"]
+]
+```
+
+**Why:** Since Django 4.0, the CSRF middleware checks the `Origin` header on every HTTPS POST request. Railway forces HTTPS — so all form submissions (login, register, creating/editing/deleting todos, uploading profile pictures) go over HTTPS. Without `CSRF_TRUSTED_ORIGINS`, Django rejects all of them with a "403 Forbidden - CSRF verification failed" error. `ALLOWED_HOSTS` alone only validates the `Host` header, not the `Origin` — you need both.
+
+This code auto-generates the trusted origins from `ALLOWED_HOSTS` by prefixing `https://` to each domain. It filters out `localhost`/`127.0.0.1` because local development typically runs over HTTP, not HTTPS — generating `https://localhost` would break CSRF checks on your dev machine.
+
+#### f) Replace the `DATABASES` block
 
 **Replace** the entire `DATABASES` block (lines 76-81):
 
@@ -183,7 +199,7 @@ import os
 import dj_database_url
 ```
 
-#### f) Add `STATIC_ROOT` and configure Whitenoise
+#### g) Add `STATIC_ROOT` and configure Whitenoise
 
 **Why this is needed:** Django's built-in `runserver` serves static files automatically during development. In production, Gunicorn does NOT serve static files — it only handles Python/WSGI requests. Without a static file server, Django admin CSS, JavaScript, and any custom static assets will return 404 errors, leaving the admin panel unstyled and unusable. Whitenoise fills this gap: it's a middleware that serves static files directly from the Django app without needing Nginx or a CDN. It's the simplest way to handle static files on Railway.
 
@@ -226,7 +242,7 @@ STORAGES = {
 
 **Why `CompressedManifestStaticFilesStorage`:** This storage backend compresses static files with gzip/Brotli and appends content-hashes to filenames (e.g., `styles.css` → `styles.a1b2c3d4.css`). The hashed names enable far-future cache headers, meaning browsers load your static files instantly on repeat visits. If you skip this and use the basic storage, Whitenoise still works but without compression or cache-busting.
 
-#### g) Add `MEDIA_URL` and `MEDIA_ROOT`
+#### h) Add `MEDIA_URL` and `MEDIA_ROOT`
 
 Add these two lines **after** `STATIC_URL`:
 
@@ -676,6 +692,11 @@ DEBUG = os.environ.get("DEBUG", "False") == "True"
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
 
+CSRF_TRUSTED_ORIGINS = [
+    f"https://{host}" for host in ALLOWED_HOSTS
+    if host not in ["127.0.0.1", "localhost"]
+]
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -798,7 +819,7 @@ Before pushing to GitHub, make sure these files exist/are modified:
 - [ ] `requirements.txt` (new — includes `Pillow`, and optionally `cloudinary`/`django-cloudinary-storage`)
 - [ ] `runtime.txt` (new)
 - [ ] `Procfile` (new — single `web:` command: `collectstatic && migrate && gunicorn`)
-- [ ] `todoproject/settings.py` (modified — 7 changes: `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `DATABASES`, `STATIC_ROOT`+Whitenoise, `MEDIA_URL`/`MEDIA_ROOT`, `CLOUDINARY_URL`+conditional blocks)
+- [ ] `todoproject/settings.py` (modified — 8 changes: `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, `DATABASES`, `STATIC_ROOT`+Whitenoise, `MEDIA_URL`/`MEDIA_ROOT`, `CLOUDINARY_URL`+conditional blocks)
 - [ ] `todos/urls.py` (modified — remove `if settings.DEBUG:` guard if using Approach A)
 - [ ] `.env.example` (new)
 - [ ] `.gitignore` (updated — add `staticfiles/`, `media/`, and `.env`)
