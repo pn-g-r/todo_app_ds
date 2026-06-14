@@ -58,14 +58,14 @@ Railway reads this to know which Python version to install. `x` means "latest pa
 Create this file in the project root (no file extension):
 
 ```
-web: python manage.py collectstatic --noinput && python manage.py migrate --noinput && gunicorn todoproject.wsgi:application --bind 0.0.0.0:${PORT} --log-file -
+web: python manage.py collectstatic --noinput && python manage.py migrate --noinput && gunicorn todoproject.wsgi:application --bind 0.0.0.0:${PORT} --workers 2 --threads 4 --log-file -
 ```
 
 **What this does:**
 - `web` — Railway runs this as the container's start command. It collects static files into `STATIC_ROOT` (needed for Whitenoise and Django admin styling), applies pending database migrations, then starts the application using gunicorn.
 - `--bind 0.0.0.0:${PORT}` is **critical** — without it, Gunicorn binds to `127.0.0.1:8000` (loopback only). Railway's reverse proxy can't reach loopback inside the container, health checks fail, and the deploy is marked as crashed. `${PORT}` is the environment variable Railway injects dynamically at runtime.
 - `collectstatic` is placed here (not in Railway's Pre-deploy Command) because Pre-deploy commands run in a **separate container** — any filesystem changes from Pre-deploy are lost. Static files must be collected in the same container that runs the web process.
-- `migrate` with `--noinput` is harmless even if run on every container restart.
+- `--workers 2 --threads 4` prevent **worker exhaustion** — by default, Gunicorn starts with exactly one synchronous worker. If one user uploads a profile picture (an I/O-bound operation), that single worker blocks entirely. All other visitors get 502 Bad Gateway timeouts until the upload completes. Two workers with four threads each handle up to 8 concurrent connections — sufficient for a small personal app on Railway's free tier.
 - If `collectstatic` fails, `migrate` and `gunicorn` are skipped — this lets you catch misconfigurations in the deploy logs.
 
 > **Note:** Modern Railway uses **Railpack** which auto-detects Django projects and would configure `python manage.py migrate && gunicorn {app}.wsgi:application` automatically. The Procfile above overrides the auto-detected command to add `collectstatic`, which Railpack does not include by default.
@@ -139,9 +139,12 @@ ALLOWED_HOSTS = []
 
 ```python
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
+ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS if host.strip()]
 ```
 
 **Why:** Django's `ALLOWED_HOSTS` is a security mechanism that prevents HTTP Host header attacks. An empty list `[]` means Django rejects all incoming requests (except from `localhost` in debug mode). In production, you must explicitly list every domain that's allowed to serve your app. If you forget to set this, every visitor will see a "Bad Request (400)" error. Using an environment variable lets you configure different domains for local dev (`localhost`) vs Railway (`yourapp.up.railway.app`) without changing code.
+
+The `.strip()` and `if host.strip()` are critical safety measures: if someone adds a space after a comma in Railway's Variables UI (e.g., `yourapp.up.railway.app, todos.yourdomain.com`), `.split(",")` would produce `["yourapp.up.railway.app", " todos.yourdomain.com"]` — the leading space causes Django to reject the second domain with a `DisallowedHost` error. Stripping and filtering empty strings prevents this silent failure.
 
 #### e) Add `CSRF_TRUSTED_ORIGINS`
 
@@ -267,6 +270,14 @@ STORAGES = {
 **Why `default` with `FileSystemStorage`:** Django 4.2+ reads ALL storage backends from the `STORAGES` setting. If you define `STORAGES` but omit `default`, Django doesn't fall back to the implicit default — it throws an error. Explicitly setting `default` to `FileSystemStorage` preserves the normal filesystem behavior for all file operations (including profile picture uploads locally). When Cloudinary is active, the `default` entry gets swapped for Cloudinary's backend.
 
 **Why `CompressedManifestStaticFilesStorage`:** This storage backend compresses static files with gzip/Brotli and appends content-hashes to filenames (e.g., `styles.css` → `styles.a1b2c3d4.css`). The hashed names enable far-future cache headers, meaning browsers load your static files instantly on repeat visits. If you skip this and use the basic storage, Whitenoise still works but without compression or cache-busting.
+
+Also add this line **after** `STATIC_ROOT` to prevent `collectstatic` from failing on missing assets:
+
+```python
+WHITENOISE_MANIFEST_STRICT = False
+```
+
+**Why:** When `collectstatic` runs, the manifest storage scans CSS files for `url()` references and appends hashes to the referenced assets. If any CSS file references a missing file (a font, a source map, an icon), Whitenoise throws a `ValueError` and `collectstatic` crashes. Since our Procfile chains commands with `&&`, a `collectstatic` failure blocks `migrate` and `gunicorn` from ever starting — the entire deploy fails. Setting `MANIFEST_STRICT = False` tells Whitenoise to skip missing assets instead of crashing, keeping the deployment alive. This is especially important if you ever add Bootstrap, Font Awesome, or any third-party CSS that references optional assets.
 
 #### i) Add `MEDIA_URL` and `MEDIA_ROOT`
 
@@ -717,6 +728,7 @@ CLOUDINARY_URL = os.environ.get("CLOUDINARY_URL", "")
 DEBUG = os.environ.get("DEBUG", "").lower().strip() in ("1", "true", "yes")
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
+ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS if host.strip()]
 
 CSRF_TRUSTED_ORIGINS = [
     f"https://{host}" for host in ALLOWED_HOSTS
@@ -801,6 +813,8 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+WHITENOISE_MANIFEST_STRICT = False
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", BASE_DIR / "media"))
